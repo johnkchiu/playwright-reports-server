@@ -19,6 +19,7 @@
     "@heroui/switch": "2.2.13",
     "@heroui/system": "2.4.11",
     "@heroui/theme": "2.4.11",
+    "@playwright/test": "latest",
     "@react-aria/selection": "^3.12.1",
     "@react-aria/ssr": "^3.9.7",
     "@react-aria/utils": "^3.15.0",
@@ -29,8 +30,8 @@
     "clsx": "^2.1.1",
     "croner": "^9.0.0",
     "envalid": "^8.0.0",
+    "fast-folder-size": "^2.4.0",
     "framer-motion": "^11.11.8",
-    "get-folder-size": "5.0.0",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
     "mime": "^4.0.4",
@@ -42,8 +43,7 @@
     "sharp": "^0.33.5",
     "sonner": "^1.5.0",
     "tailwind-merge": "^3.0.2",
-    "uuid": "^10.0.0",
-    "@playwright/test": "latest"
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "@cyborgtests/reporter-playwright-reports-server": "^2.3.3",
