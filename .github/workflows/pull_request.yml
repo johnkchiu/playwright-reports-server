@@ -14,6 +14,8 @@ jobs:
           node-version: '22'
       - name: Install dependencies
         run: npm ci
+        env:
+          FAST_FOLDER_SIZE_DU_ZIP_LOCATION: "DU.zip"
       - name: Run prettier
         run: npm run format:check
 
@@ -28,6 +30,8 @@ jobs:
           node-version: '22'
       - name: Install dependencies
         run: npm ci
+        env:
+          FAST_FOLDER_SIZE_DU_ZIP_LOCATION: "DU.zip"
       - name: Run eslint
         run: npm run lint
 
@@ -43,6 +47,8 @@ jobs:
   #         node-version: '22'
   #     - name: Install dependencies
   #       run: npm ci
+  #       env:
+  #         FAST_FOLDER_SIZE_DU_ZIP_LOCATION: "DU.zip"
   #     - name: Run unit tests
   #       run: npm run test:unit
 
@@ -54,5 +60,7 @@ jobs:
         uses: actions/checkout@v5
       - name: Install dependencies
         run: npm ci
+        env:
+          FAST_FOLDER_SIZE_DU_ZIP_LOCATION: "DU.zip"
       - name: Execute API tests
         run: npm run test:api
