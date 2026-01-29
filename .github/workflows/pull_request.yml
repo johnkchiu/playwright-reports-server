@@ -6,6 +6,8 @@ jobs:
   prettier:
     runs-on: ubuntu-latest
     steps:
+      - name: Install coreutils
+        run: sudo apt-get update && sudo apt-get install -y coreutils  
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Set up Node.js
@@ -22,6 +24,8 @@ jobs:
   eslint:
     runs-on: ubuntu-latest
     steps:
+      - name: Install coreutils
+        run: sudo apt-get update && sudo apt-get install -y coreutils  
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Set up Node.js
@@ -56,6 +60,8 @@ jobs:
     needs: [prettier, eslint]
     runs-on: ubuntu-latest
     steps:
+      - name: Install coreutils
+        run: sudo apt-get update && sudo apt-get install -y coreutils  
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Install dependencies
