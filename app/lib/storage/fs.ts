@@ -5,7 +5,8 @@ import { createWriteStream, type Dirent, type Stats } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { PassThrough } from 'node:stream';
 
-import getFolderSize from 'get-folder-size';
+// @ts-ignore
+import du from 'du';
 
 import { bytesToString } from './format';
 import {
@@ -46,19 +47,68 @@ async function createDirectoriesIfMissing() {
   await createDirectory(TMP_FOLDER);
 }
 
-const getSizeInMb = async (dir: string) => {
-  const sizeBytes = await getFolderSize.loose(dir);
+/**
+ * Get the size of a file or folder in bytes.
+ * Uses du for directories and fs.stat for files.
+ */
+async function getFolderSizeAsync(targetPath: string): Promise<number> {
+  try {
+    const stats = await fs.stat(targetPath);
 
-  return bytesToString(sizeBytes);
+    // If it's a file, return its size directly
+    if (stats.isFile()) {
+      return stats.size;
+    }
+
+    // If it's a directory, use du
+    if (stats.isDirectory()) {
+      const size = await du(targetPath);
+
+      return size ?? 0;
+    }
+
+    return 0;
+  } catch (error) {
+    console.error(`Error getting size for ${targetPath}:`, error);
+
+    return 0;
+  }
+}
+
+const getSizeInMb = async (dir: string) => {
+  const sizeBytes = await getFolderSizeAsync(dir);
+
+  return bytesToString(sizeBytes ?? 0);
 };
+
+async function getResultsCount() {
+  const files = await fs.readdir(RESULTS_FOLDER);
+
+  return Math.round(files.length / 2);
+}
+
+async function getReportsCount() {
+  const entries = await fs.readdir(REPORTS_FOLDER, { withFileTypes: true, recursive: true });
+
+  const reportEntries = entries.filter(
+    (entry) => !entry.isDirectory() && entry.name === 'index.html' && !(entry as any).path.endsWith('trace'),
+  );
+
+  return reportEntries.length;
+}
 
 export async function getServerDataInfo(): Promise<ServerDataInfo> {
   await createDirectoriesIfMissing();
-  const dataFolderSizeinMB = await getSizeInMb(DATA_FOLDER);
-  const resultsCount = await getResultsCount();
-  const resultsFolderSizeinMB = await getSizeInMb(RESULTS_FOLDER);
-  const { total: reportsCount } = await readReports();
-  const reportsFolderSizeinMB = await getSizeInMb(REPORTS_FOLDER);
+
+  // Use du for top-level folder calculations (much faster with parallel execution!)
+  const [dataFolderSizeinMB, resultsFolderSizeinMB, reportsFolderSizeinMB, resultsCount, reportsCount] =
+    await Promise.all([
+      getSizeInMb(DATA_FOLDER),
+      getSizeInMb(RESULTS_FOLDER),
+      getSizeInMb(REPORTS_FOLDER),
+      getResultsCount(),
+      getReportsCount(),
+    ]);
 
   return {
     dataFolderSizeinMB,
@@ -75,12 +125,6 @@ export async function readFile(targetPath: string, contentType: string | null) {
   });
 }
 
-async function getResultsCount() {
-  const files = await fs.readdir(RESULTS_FOLDER);
-
-  return Math.round(files.length / 2);
-}
-
 export async function readResults(input?: ReadResultsInput) {
   await createDirectoriesIfMissing();
   const files = await fs.readdir(RESULTS_FOLDER);
@@ -94,7 +138,8 @@ export async function readResults(input?: ReadResultsInput) {
 
       const stat = await fs.stat(filePath);
 
-      const sizeBytes = await getFolderSize.loose(filePath.replace('.json', '.zip'));
+      const sizeBytesRaw = await getFolderSizeAsync(filePath.replace('.json', '.zip'));
+      const sizeBytes = sizeBytesRaw ?? 0;
 
       const size = bytesToString(sizeBytes);
 
@@ -234,7 +279,8 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
       const id = path.basename(file.filePath);
       const reportPath = path.dirname(file.filePath);
       const parentDir = path.basename(reportPath);
-      const sizeBytes = await getFolderSize.loose(path.join(reportPath, id));
+      const sizeBytesRaw = await getFolderSizeAsync(path.join(reportPath, id));
+      const sizeBytes = sizeBytesRaw ?? 0;
       const size = bytesToString(sizeBytes);
 
       const projectName = parentDir === REPORTS_PATH ? '' : parentDir;
