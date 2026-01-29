@@ -8,6 +8,8 @@ WORKDIR /app
 
 # Install dependencies based on the preferred package manager
 COPY package.json package-lock.json* ./
+# Upgrade npm to fix known bugs in npm 10.x
+RUN npm install -g npm@11.8.0
 RUN npm ci
 
 # Rebuild the source code only when needed
