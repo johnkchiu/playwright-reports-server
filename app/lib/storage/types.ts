@@ -89,7 +89,7 @@ export type ReportMetadata = Partial<{
   sizeBytes?: number;
   sizeCalculatedAt?: string;
 }> &
-  Record<string, string>;
+  Record<string, string | number>;
 
 export interface ServerDataInfo {
   dataFolderSizeinMB: string;
