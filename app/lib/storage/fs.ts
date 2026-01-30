@@ -4,8 +4,39 @@ import { randomUUID } from 'node:crypto';
 import { createWriteStream, type Dirent, type Stats } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { PassThrough } from 'node:stream';
+import { promisify } from 'node:util';
 
-import getFolderSize from 'get-folder-size';
+import fastFolderSize from 'fast-folder-size';
+
+const fastFolderSizeAsync = promisify(fastFolderSize);
+
+/**
+ * Get the size of a file or folder in bytes.
+ * Uses fast-folder-size for directories and fs.stat for files.
+ */
+async function getFolderSizeAsync(targetPath: string): Promise<number> {
+  try {
+    const stats = await fs.stat(targetPath);
+
+    // If it's a file, return its size directly
+    if (stats.isFile()) {
+      return stats.size;
+    }
+
+    // If it's a directory, use fast-folder-size
+    if (stats.isDirectory()) {
+      const size = await fastFolderSizeAsync(targetPath);
+
+      return size ?? 0;
+    }
+
+    return 0;
+  } catch (error) {
+    console.error(`Error getting size for ${targetPath}:`, error);
+
+    return 0;
+  }
+}
 
 import { bytesToString } from './format';
 import {
@@ -47,27 +78,10 @@ async function createDirectoriesIfMissing() {
 }
 
 const getSizeInMb = async (dir: string) => {
-  const sizeBytes = await getFolderSize.loose(dir);
+  const sizeBytes = await getFolderSizeAsync(dir);
 
-  return bytesToString(sizeBytes);
+  return bytesToString(sizeBytes ?? 0);
 };
-
-export async function getServerDataInfo(): Promise<ServerDataInfo> {
-  await createDirectoriesIfMissing();
-  const dataFolderSizeinMB = await getSizeInMb(DATA_FOLDER);
-  const resultsCount = await getResultsCount();
-  const resultsFolderSizeinMB = await getSizeInMb(RESULTS_FOLDER);
-  const { total: reportsCount } = await readReports();
-  const reportsFolderSizeinMB = await getSizeInMb(REPORTS_FOLDER);
-
-  return {
-    dataFolderSizeinMB,
-    numOfResults: resultsCount,
-    resultsFolderSizeinMB,
-    numOfReports: reportsCount,
-    reportsFolderSizeinMB,
-  };
-}
 
 export async function readFile(targetPath: string, contentType: string | null) {
   return await fs.readFile(path.join(REPORTS_FOLDER, targetPath), {
@@ -79,6 +93,38 @@ async function getResultsCount() {
   const files = await fs.readdir(RESULTS_FOLDER);
 
   return Math.round(files.length / 2);
+}
+
+async function getReportsCount() {
+  const entries = await fs.readdir(REPORTS_FOLDER, { withFileTypes: true, recursive: true });
+
+  const reportEntries = entries.filter(
+    (entry) => !entry.isDirectory() && entry.name === 'index.html' && !(entry as any).path.endsWith('trace'),
+  );
+
+  return reportEntries.length;
+}
+
+export async function getServerDataInfo(): Promise<ServerDataInfo> {
+  await createDirectoriesIfMissing();
+
+  // Use fast-folder-size for top-level folder calculations (much faster!)
+  const [dataFolderSizeinMB, resultsFolderSizeinMB, reportsFolderSizeinMB, resultsCount, reportsCount] =
+    await Promise.all([
+      getSizeInMb(DATA_FOLDER),
+      getSizeInMb(RESULTS_FOLDER),
+      getSizeInMb(REPORTS_FOLDER),
+      getResultsCount(),
+      getReportsCount(),
+    ]);
+
+  return {
+    dataFolderSizeinMB,
+    numOfResults: resultsCount,
+    resultsFolderSizeinMB,
+    numOfReports: reportsCount,
+    reportsFolderSizeinMB,
+  };
 }
 
 export async function readResults(input?: ReadResultsInput) {
@@ -94,7 +140,8 @@ export async function readResults(input?: ReadResultsInput) {
 
       const stat = await fs.stat(filePath);
 
-      const sizeBytes = await getFolderSize.loose(filePath.replace('.json', '.zip'));
+      const sizeBytesRaw = await getFolderSizeAsync(filePath.replace('.json', '.zip'));
+      const sizeBytes = sizeBytesRaw ?? 0;
 
       const size = bytesToString(sizeBytes);
 
@@ -196,6 +243,33 @@ async function readOrParseReportMetadata(id: string, projectName: string): Promi
   return metadata;
 }
 
+async function getReportSizeWithCache(
+  reportPath: string,
+  reportID: string,
+  metadata: ReportMetadata,
+): Promise<{ sizeBytes: number; metadataUpdated: boolean }> {
+  // If we have a cached size, check if it's still valid
+  if (metadata.sizeBytes && metadata.sizeCalculatedAt) {
+    try {
+      const reportStat = await fs.stat(reportPath);
+      const cacheDate = new Date(metadata.sizeCalculatedAt);
+
+      // If folder hasn't been modified since cache, use cached value
+      if (reportStat.mtime <= cacheDate) {
+        return { sizeBytes: metadata.sizeBytes, metadataUpdated: false };
+      }
+    } catch {
+      // If stat fails, recalculate
+      console.warn(`[fs] failed to stat ${reportPath}, recalculating size`);
+    }
+  }
+
+  // Calculate fresh size
+  const sizeBytes = (await getFolderSizeAsync(reportPath)) ?? 0;
+
+  return { sizeBytes, metadataUpdated: true };
+}
+
 export async function readReports(input?: ReadReportsInput): Promise<ReadReportsOutput> {
   await createDirectoriesIfMissing();
   const entries = await fs.readdir(REPORTS_FOLDER, { withFileTypes: true, recursive: true });
@@ -229,17 +303,35 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
     })
     .filter((report) => (input?.project ? input.project === report.project : report));
 
+  // Optimization: If no search filter, paginate BEFORE fetching metadata
+  // This reduces metadata fetches from potentially thousands to just the page size
+  const shouldApplySearchFilter = input?.search?.trim();
+  const reportsToProcess = shouldApplySearchFilter
+    ? reportsWithProject
+    : handlePagination(reportsWithProject, input?.pagination);
+
   const allReports = await Promise.all(
-    reportsWithProject.map(async (file) => {
+    reportsToProcess.map(async (file) => {
       const id = path.basename(file.filePath);
       const reportPath = path.dirname(file.filePath);
       const parentDir = path.basename(reportPath);
-      const sizeBytes = await getFolderSize.loose(path.join(reportPath, id));
-      const size = bytesToString(sizeBytes);
-
       const projectName = parentDir === REPORTS_PATH ? '' : parentDir;
 
+      // Read metadata (which may contain cached size)
       const metadata = await readOrParseReportMetadata(id, projectName);
+
+      // Get size with caching
+      const reportFullPath = path.join(reportPath, id);
+      const { sizeBytes, metadataUpdated } = await getReportSizeWithCache(reportFullPath, id, metadata);
+
+      // Update metadata file if size was recalculated
+      if (metadataUpdated) {
+        metadata.sizeBytes = sizeBytes;
+        metadata.sizeCalculatedAt = new Date().toISOString();
+        await saveReportMetadata(reportFullPath, metadata);
+      }
+
+      const size = bytesToString(sizeBytes);
 
       return {
         reportID: id,
@@ -256,8 +348,8 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
   let filteredReports = allReports as ReportHistory[];
 
   // Filter by search if provided
-  if (input?.search && input.search.trim()) {
-    const searchTerm = input.search.toLowerCase().trim();
+  if (shouldApplySearchFilter) {
+    const searchTerm = shouldApplySearchFilter.toLowerCase().trim();
 
     filteredReports = filteredReports.filter((report) => {
       // Search in title, reportID, project, and all metadata fields
@@ -275,11 +367,15 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
 
       return searchableFields.some((field) => field?.toLowerCase().includes(searchTerm));
     });
+
+    // Apply pagination after search filtering
+    filteredReports = handlePagination(filteredReports, input?.pagination);
   }
 
-  const paginatedReports = handlePagination(filteredReports, input?.pagination);
+  // Calculate proper total count
+  const total = shouldApplySearchFilter ? filteredReports.length : reportsWithProject.length;
 
-  return { reports: paginatedReports as ReportHistory[], total: filteredReports.length };
+  return { reports: filteredReports as ReportHistory[], total };
 }
 
 export async function deleteResults(resultsIds: string[]) {
