@@ -243,6 +243,33 @@ async function readOrParseReportMetadata(id: string, projectName: string): Promi
   return metadata;
 }
 
+async function getReportSizeWithCache(
+  reportPath: string,
+  reportID: string,
+  metadata: ReportMetadata,
+): Promise<{ sizeBytes: number; metadataUpdated: boolean }> {
+  // If we have a cached size, check if it's still valid
+  if (metadata.sizeBytes && metadata.sizeCalculatedAt) {
+    try {
+      const reportStat = await fs.stat(reportPath);
+      const cacheDate = new Date(metadata.sizeCalculatedAt);
+
+      // If folder hasn't been modified since cache, use cached value
+      if (reportStat.mtime <= cacheDate) {
+        return { sizeBytes: metadata.sizeBytes, metadataUpdated: false };
+      }
+    } catch {
+      // If stat fails, recalculate
+      console.warn(`[fs] failed to stat ${reportPath}, recalculating size`);
+    }
+  }
+
+  // Calculate fresh size
+  const sizeBytes = (await getFolderSizeAsync(reportPath)) ?? 0;
+
+  return { sizeBytes, metadataUpdated: true };
+}
+
 export async function readReports(input?: ReadReportsInput): Promise<ReadReportsOutput> {
   await createDirectoriesIfMissing();
   const entries = await fs.readdir(REPORTS_FOLDER, { withFileTypes: true, recursive: true });
@@ -276,18 +303,35 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
     })
     .filter((report) => (input?.project ? input.project === report.project : report));
 
+  // Optimization: If no search filter, paginate BEFORE fetching metadata
+  // This reduces metadata fetches from potentially thousands to just the page size
+  const shouldApplySearchFilter = input?.search?.trim();
+  const reportsToProcess = shouldApplySearchFilter
+    ? reportsWithProject
+    : handlePagination(reportsWithProject, input?.pagination);
+
   const allReports = await Promise.all(
-    reportsWithProject.map(async (file) => {
+    reportsToProcess.map(async (file) => {
       const id = path.basename(file.filePath);
       const reportPath = path.dirname(file.filePath);
       const parentDir = path.basename(reportPath);
-      const sizeBytesRaw = await getFolderSizeAsync(path.join(reportPath, id));
-      const sizeBytes = sizeBytesRaw ?? 0;
-      const size = bytesToString(sizeBytes);
-
       const projectName = parentDir === REPORTS_PATH ? '' : parentDir;
 
+      // Read metadata (which may contain cached size)
       const metadata = await readOrParseReportMetadata(id, projectName);
+
+      // Get size with caching
+      const reportFullPath = path.join(reportPath, id);
+      const { sizeBytes, metadataUpdated } = await getReportSizeWithCache(reportFullPath, id, metadata);
+
+      // Update metadata file if size was recalculated
+      if (metadataUpdated) {
+        metadata.sizeBytes = sizeBytes;
+        metadata.sizeCalculatedAt = new Date().toISOString();
+        await saveReportMetadata(reportFullPath, metadata);
+      }
+
+      const size = bytesToString(sizeBytes);
 
       return {
         reportID: id,
@@ -304,8 +348,8 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
   let filteredReports = allReports as ReportHistory[];
 
   // Filter by search if provided
-  if (input?.search && input.search.trim()) {
-    const searchTerm = input.search.toLowerCase().trim();
+  if (shouldApplySearchFilter) {
+    const searchTerm = shouldApplySearchFilter.toLowerCase().trim();
 
     filteredReports = filteredReports.filter((report) => {
       // Search in title, reportID, project, and all metadata fields
@@ -323,11 +367,15 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
 
       return searchableFields.some((field) => field?.toLowerCase().includes(searchTerm));
     });
+
+    // Apply pagination after search filtering
+    filteredReports = handlePagination(filteredReports, input?.pagination);
   }
 
-  const paginatedReports = handlePagination(filteredReports, input?.pagination);
+  // Calculate proper total count
+  const total = shouldApplySearchFilter ? filteredReports.length : reportsWithProject.length;
 
-  return { reports: paginatedReports as ReportHistory[], total: filteredReports.length };
+  return { reports: filteredReports as ReportHistory[], total };
 }
 
 export async function deleteResults(resultsIds: string[]) {
